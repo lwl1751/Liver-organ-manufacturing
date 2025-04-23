@@ -1,0 +1,37 @@
+### model
+model_name_or_path: Model/vicuna-13b-v1___5
+template: vicuna
+
+### dataset
+data_path: tain.json
+cutoff_len: 512
+preprocessing_num_workers: 16
+
+### output
+output_dir: vicuna-v1.5/sft
+logging_steps: 10
+logging_first_step: true
+save_steps: 500
+overwrite_output_dir: true
+
+### train
+deepspeed_path: train/deepspeed_zero_stage2_config.json
+per_device_train_batch_size: 4
+gradient_accumulation_steps: 4
+gradient_checkpointing: true
+learning_rate: 2.0e-5
+num_train_epochs: 3
+lr_scheduler_type: WarmupLR
+warmup_ratio: 0.05
+lora_rank: 8
+lora_dropout: 0.05
+lora_alpha: 16
+fp16: true
+ddp_timeout: 180000000
+swanlab:
+  project: "vicuna-fintune"
+  experiment_name: "vicuna-13b-v1.5"
+  description: "使用vicuna-13b-v1.5模型在肝器官数据集上微调。"
+  config:
+    model: "vicuna-13b-v1.5"
+    dataset: "liver_dataset"
