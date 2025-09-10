@@ -8,7 +8,7 @@ import json
 import concurrent.futures
 import re
 
-small_model_path = '/home/liangwenliang/biobert-base-cased-v1.2'
+small_model_path = 'Model/biobert-base-cased-v1.2'
 small_tokenizer = AutoTokenizer.from_pretrained(small_model_path)
 small_model = AutoModel.from_pretrained(small_model_path)
 
@@ -27,7 +27,7 @@ def encode_with_small_model(sen):
 # 获取 从句子中抽取实体的 prompt
 def content_prompt(sentence,prompt,num_example = 3):
     # embedding_data: id,sentence,output,embedding_sen
-    embedding_data = pickle.load(open('/home/liangwenliang/器官制造/LLM_2/data/seed_data_fix/rag.pkl','rb'))
+    embedding_data = pickle.load(open('data/seed_data_fix/rag.pkl','rb'))
     embedding_sen = encode_with_small_model(sentence)
     embedding_sen = np.array(embedding_sen)
     embedding_data_array = np.array([i['embedding_sen'] for i in embedding_data])
@@ -47,13 +47,11 @@ def content_prompt(sentence,prompt,num_example = 3):
 
 # 实现 prompt 的批量处理
 def process_batch(batch_sentence_list, prompt):
-    with concurrent.futures.ThreadPoolExecutor() as executor: # 创建线程池执行器
-        future_to_index = {executor.submit(content_prompt, sen, prompt): i for i, sen in enumerate(batch_sentence_list)}
-        results = [None] * len(batch_sentence_list)
-        for future in concurrent.futures.as_completed(future_to_index):
-            index = future_to_index[future]
-            results[index] = future.result()
-        return results
+    # 直接使用单线程处理，避免多线程资源竞争
+    results = []
+    for sen in batch_sentence_list:
+        results.append(content_prompt(sen, prompt))
+    return results
 
 def load_model_and_tokenizer(model_path, lora_path):
     tokenizer = AutoTokenizer.from_pretrained(
@@ -102,7 +100,7 @@ def read_txt(path):
     sentences = [
         sentence.strip()
         for sentence in re.split(r'(?<!\d)\.(?!\d)|\n', ' '.join(data))
-        if sentence.strip() and len(sentence.strip()) >= 15
+        if sentence.strip() and len(sentence.strip()) >= 20
     ]
 
     return sentences

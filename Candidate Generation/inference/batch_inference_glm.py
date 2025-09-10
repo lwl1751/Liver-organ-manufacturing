@@ -1,142 +1,209 @@
 import os
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:128"
 import time
-from utils import *
 import sys
-from prompt import inference_prompt
-from accelerate import Accelerator
-from accelerate.utils import gather_object
+import logging
+from datetime import datetime
+import torch
+import json
 from transformers import AutoModelForCausalLM, AutoTokenizer
-import torch, time, json
 from peft import PeftModel
+from prompt_3 import inference_prompt, sft_prompt
+from utils import json2list, write_json, content_prompt  
 
-accelerator = Accelerator()
-model_path = 'glm-4-9b-chat'
-lora_path = ''
-model = AutoModelForCausalLM.from_pretrained(
-    model_path,    
-    device_map={"": accelerator.process_index},
-    torch_dtype=torch.bfloat16,
-    trust_remote_code=True,
+# 设置日志
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(f'inference_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'),
+        logging.StreamHandler()
+    ]
 )
-tokenizer = AutoTokenizer.from_pretrained(model_path,trust_remote_code=True, use_fast=True)   
-tokenizer.pad_token = tokenizer.eos_token
-lora_model = PeftModel.from_pretrained(
-    model,
-    lora_path,
-    device_map='auto',
-    torch_dtype=torch.bfloat16
-)
+logger = logging.getLogger(__name__)
 
-#Get the actual CUDA device ID for this process
-message = [f"Hello ,this is GPU {accelerator.process_index}"]
-messages = gather_object(message)
-accelerator.print(messages)
-
-# batch, left pad (for inference), and tokenize
-def prepare_prompts(prompts, tokenizer, batch_size=16):
-    batches = [prompts[i:i + batch_size] for i in range(0, len(prompts), batch_size)]  
-    batches_tok = []
-    tokenizer.padding_side = "left"
-    
-    for prompt_batch in batches:
-        batches_tok.append(
-            tokenizer(
-                prompt_batch, 
-                return_tensors="pt", 
-                padding='longest', 
-                truncation=False, 
-                pad_to_multiple_of=8,
-                add_special_tokens=False
-            ).to("cuda") 
+def load_model_and_tokenizer(model_path, lora_path, device):
+    """加载模型和分词器，处理设备配置"""
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(
+            model_path, 
+            trust_remote_code=True, 
+            use_fast=True
         )
-    return batches_tok
+        tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.pad_token_id = tokenizer.eos_token_id
 
-def get_response(sentence_list, batch_size=16):
-    accelerator.print(f'总句子数目为 {len(sentence_list)}')
+        model = AutoModelForCausalLM.from_pretrained(
+            model_path,
+            torch_dtype=torch.bfloat16,
+            trust_remote_code=True,
+            device_map=None 
+        ).to(device) 
 
-    # 使用 with 语句分配句子列表和 prompts
-    with accelerator.split_between_processes(sentence_list) as sentence_list_split:
+        lora_model = PeftModel.from_pretrained(
+            model,
+            lora_path,
+            torch_dtype=torch.bfloat16
+        )
         
-        # 同步 GPU 并启动计时器
-        accelerator.wait_for_everyone()    
-        start = time.time()
-        results = []
+        lora_model.eval()
+        logger.info("模型和分词器加载成功")
+        return lora_model, tokenizer
+    except Exception as e:
+        logger.error(f"模型加载失败: {str(e)}")
+        raise
 
-        # 将 prompts 按批处理
-        batch_prompts_split = process_batch(sentence_list_split, inference_prompt)
-        # batch_prompts_split = [sft_prompt + '\n' + sen for sen in sentence_list_split]
-        prompt_batches = prepare_prompts(batch_prompts_split, tokenizer, batch_size=batch_size)
-        accelerator.print(time.time() - start)
-        accelerator.print('prompt tokenized finished')
+def single_sentence_generate(sentence, model, tokenizer, device, prompt_type="few-shot"):
+    """单个句子生成响应"""
+    try:
+        if prompt_type == "few-shot":
+            prompt = content_prompt(sentence, inference_prompt)
+        else:  # zero-shot
+            prompt = sft_prompt + '\n' + sentence
         
-        start = time.time()
-        for batch_idx, prompts_tokenized in enumerate(prompt_batches):
-            outputs_tokenized = lora_model.generate(
-                **prompts_tokenized, 
-                max_new_tokens=512, 
-                pad_token_id=tokenizer.eos_token_id, 
-                do_sample=True,
-                temperature=0.1,
-                top_p=0.6
+        logger.info(f"\n{'='*80}")
+        logger.info(f"处理句子: {sentence[:100]}...")
+        
+        chat = [{"role": "user", "content": prompt}]
+        
+        text = tokenizer.apply_chat_template(chat, add_generation_prompt=True, tokenize=False)
+        
+        inputs = tokenizer(
+            text,
+            return_tensors="pt",
+            return_dict=True,
+            padding=True,
+            truncation=True
+        )
+ 
+        inputs = {k: v.to(device) for k, v in inputs.items()}
+
+        gen_kwargs = {
+            "max_new_tokens": 1024,
+            "do_sample": True,
+            "temperature": 0.01,
+            "top_p": 0.6,
+            "pad_token_id": tokenizer.pad_token_id
+        }
+        
+        start_time = time.time()
+        with torch.no_grad():
+            outputs = model.generate(
+                **inputs,** gen_kwargs
             )
+        generation_time = time.time() - start_time
+        generated_output = outputs[:, inputs['input_ids'].shape[1]:]
+        decoded_output = tokenizer.decode(generated_output[0], skip_special_tokens=True)
+        
+        logger.info(f"生成时间: {generation_time:.2f}秒")
+        logger.info(f"{'='*80}\n")
+        
+        return decoded_output
+        
+    except Exception as e:
+        logger.error(f"句子生成错误 '{sentence[:50]}...': {str(e)}")
+        return f"ERROR: {str(e)}"
 
-            # 从生成的 tokens 中移除 prompt 部分
-            outputs_tokenized = [tok_out[len(tok_in):] 
-                                for tok_in, tok_out in zip(prompts_tokenized["input_ids"], outputs_tokenized)]
+def get_response(sentence_list, model, tokenizer, device, prompt_type="few-shot"):
+    """逐个句子生成响应"""
+    logger.info(f"开始{prompt_type}推理，共{len(sentence_list)}个句子")
+    
+    start = time.time()
+    results = []
+    
+    for i, sentence in enumerate(sentence_list):
+        logger.info(f"处理第{i+1}/{len(sentence_list)}个句子")
+        output = single_sentence_generate(
+            sentence, 
+            model, 
+            tokenizer, 
+            device,
+            prompt_type
+        )
+        
+        results.append({
+            'sentence': sentence,
+            'output': output,
+            'prompt_type': prompt_type
+        })
+    
+    total_time = time.time() - start
+    logger.info(f'总推理时间: {total_time:.2f}秒')
+    logger.info(f'平均每个句子耗时: {total_time/len(sentence_list):.2f}秒')
+    
+    return results
 
-            outputs = tokenizer.batch_decode(outputs_tokenized)
+def merge_results(few_shot_results, zero_shot_results):
+    """将两种推理结果合并"""
+    logger.info("合并few-shot和zero-shot结果...")
+    
+    merged_dict = {}
+    
+    for result in few_shot_results:
+        sentence = result['sentence']
+        merged_dict[sentence] = {
+            'sentence': sentence,
+            'few-shot output': result['output'],
+            'zero-shot output': None
+        }
+    
+    for result in zero_shot_results:
+        sentence = result['sentence']
+        if sentence in merged_dict:
+            merged_dict[sentence]['zero-shot output'] = result['output']
+        else:
+            merged_dict[sentence] = {
+                'sentence': sentence,
+                'few-shot output': None,
+                'zero-shot output': result['output']
+            }
+    
+    merged_list = list(merged_dict.values())
+    logger.info(f"合并了{len(merged_list)}个唯一句子")
+    
+    return merged_list
 
-            # 计算当前批次句子索引，防止最后一批不足 batch_size 时越界
-            start_idx = batch_idx * batch_size
-            end_idx = min((batch_idx + 1) * batch_size, len(sentence_list_split))  # 防止越界
-            current_sentences = sentence_list_split[start_idx:end_idx]
+def main():
 
-            # 将输入句子、生成的输出和目标一起存储
-            results.extend([{'sentence': s, 'output': o} 
-                            for s, o in zip(current_sentences, outputs)])
+    test_path = 'data/seed_data/test.json'
+    output_path = 'data/inference/glm_infer.json'
 
-    # 收集所有 GPU 的结果
-    results_gathered = gather_object(results)
-    accelerator.print(time.time() - start)
+    test_samples = 354  # 确认无误后可改为 len(sentence_list)
 
-    return results_gathered
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    logger.info(f"使用设备: {device}")
+    
+    model_path = 'Model/glm-4-9b-chat'
+    lora_path = 'model/glm-4/sft/checkpoint-329'
+    model, tokenizer = load_model_and_tokenizer(model_path, lora_path, device)
+    
+    logger.info(f"从{test_path}加载测试数据")
+    target_list, sentence_list = json2list(test_path)
+    logger.info(f"加载了{len(sentence_list)}个测试样本")
+    
+    test_sentences = sentence_list[:test_samples]
+    test_targets = target_list[:test_samples]
+    logger.info(f"先测试{test_samples}个样本...")
+    
+    logger.info("开始few-shot推理...")
+    few_shot_results = get_response(test_sentences, model, tokenizer, device, "few-shot")
+    
+    logger.info("开始zero-shot推理...")
+    zero_shot_results = get_response(test_sentences, model, tokenizer, device, "zero-shot")
+
+    # 合并结果
+    merged_results = merge_results(few_shot_results, zero_shot_results)
+    
+    # 添加目标标签
+    for i, item in enumerate(merged_results):
+        item['target'] = test_targets[i]
+    
+    write_json(merged_results, output_path)
 
 
-test_path = 'test.json'
-output_path = 'inference_glm.json'
-batch_size = 4
-
-target_list, sentence_list = json2list(test_path)
-res = get_response(sentence_list, batch_size)
-for item in res:
-    sentence = item['sentence']
-    idx = sentence_list.index(sentence)  
-    target = target_list[idx]
-    item['target'] = target
-
-write_json(res,output_path)
+if __name__ == "__main__":
+    main()
 
 '''
-CUDA_VISIBLE_DEVICES=4,6,7 accelerate launch inference/batch_inference_glm.py
+CUDA_VISIBLE_DEVICES=5 python inference/batch_inference_glm.py
 '''
-
-# directory_path = liver_paper_txt'
-# output_path = 'data/inference_glm.jsonl'
-# batch_size = 4
-
-# start_index = 0
-# for index, file_name in enumerate(os.listdir(directory_path)):
-#     if index < start_index:
-#         continue
-#     if file_name.endswith('.txt'):
-#         file_path = os.path.join(directory_path, file_name)
-#         data = read_txt(file_path)
-#         txt_res = get_response(data, batch_size)
-
-#         # 创建字典，并将其追加写入JSONL文件
-#         if accelerator.is_main_process:
-#             entry = {'doi': file_name.replace('_','/'), 'output': txt_res}
-#             with open(output_path, 'a') as f:
-#                 f.write(json.dumps(entry) + '\n')
-#     accelerator.wait_for_everyone() 
