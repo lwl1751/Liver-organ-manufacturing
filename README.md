@@ -1,13 +1,11 @@
 # LMDB: An Open Access Dataset of Experimental Parameters for Liver Manufacturing Extracted from Scientific Literature
 
-This repo contains the code and data for LMDB dataset, which extract Experimental Parameters for Liver Manufacturing Extracted from Scientific Literature. 
+This repository contains the code and data for the LMDB dataset, which extracts experimental parameters for liver manufacturing from scientific literature.
 
 ## Features
 
 1. Literature screening. We collected relevant research literature from the Web of Science and PubMed databases using expert-curated search terms. The initial paper corpus was refined using GPT-4o-mini, a proprietary LLM with powerful summarization and classification capabilities, to exclude irrelevant publications.
-
 2. Candidate Generation. Identify possible entity sets from literature sentences to serve as candidates for the next stage. We compared three models: GPT-4o-mini, GLM-4-Chat and LLaMA3-8B-Instruct. The latter two models were fine-tuned on the training set.
-
 3. Template Completion. Experimental parameters were first identified from sentences to build an entity repository capturing all possible values for each entity, which was then mapped to a predefined JSON schema and generate structured experimental recordsWe compared our structured  pipeline with a direct extraction approach using GPT-4o-mini.
 
 ## Project Structure
@@ -38,11 +36,11 @@ This repo contains the code and data for LMDB dataset, which extract Experimenta
 │   ├── evaluate
 │   │   └── eval.py                         # Model Evaluation Script
 │   ├── inference                           # Inference Module
-│   │   ├── batch_inference_glm.py          
-│   │   ├── batch_inference_gpt.py          
-│   │   ├── batch_inference_llama.py        
-│   │   └── utils.py                        
-│   ├── prompt.py                           
+│   │   ├── batch_inference_glm.py        
+│   │   ├── batch_inference_gpt.py        
+│   │   ├── batch_inference_llama.py      
+│   │   └── utils.py                      
+│   ├── prompt.py                         
 │   └── train                               # Training Module
 │       ├── convert_data_format.py          # Data Format Conversion
 │       ├── deepspeed_zero_stage2_config.json # Deepspeed Configuration
@@ -54,9 +52,9 @@ This repo contains the code and data for LMDB dataset, which extract Experimenta
 │       ├── test.py                         # Testing Script
 │
 ├── Direct Extraction                      # Direct Extraction Baseline Method
-│   ├── inference.py                        
-│   ├── test_data.json                      
-│   └── utils.py                            
+│   ├── inference.py                      
+│   ├── test_data.json                    
+│   └── utils.py                          
 │
 ├── Template Completion                    # Template Completion Module
 │   ├── data                                # Data and Mapping Tables
@@ -74,10 +72,10 @@ This repo contains the code and data for LMDB dataset, which extract Experimenta
 │   ├── eval.py                             # Evaluation Script
 │   ├── infer.bash                          # Our Pipeline Script
 │   ├── infer_summary.bash                  # Literature Screening Summary Script
-│   ├── prompt.py                           
+│   ├── prompt.py                         
 │   ├── relation_extraction.py              # Relation Extraction Script
 │   ├── summary.py                          # Summary Script
-│   └── utils.py                            
+│   └── utils.py                          
 │
 ├── README.md
 ```
